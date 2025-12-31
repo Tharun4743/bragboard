@@ -6,14 +6,20 @@ from typing import List
 from datetime import timedelta
 from server import models, schemas, auth, database
 
-# Create tables
-models.Base.metadata.create_all(bind=database.engine)
-
 app = FastAPI(title="BragBoard API")
+
+# Create tables at application startup (automatic creation of server/bragboard.db)
+@app.on_event("startup")
+def on_startup():
+    models.Base.metadata.create_all(bind=database.engine)
 
 origins = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ]
 
 app.add_middleware(
@@ -76,7 +82,6 @@ def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
 
 @app.get("/users", response_model=List[schemas.UserOut])
 def read_users(skip: int = 0, limit: int = 100, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(database.get_db)):
-    # Allow all authenticated users to see the employee list (for recipient selection)
     users = db.query(models.User).offset(skip).limit(limit).all()
     return users
 
@@ -84,29 +89,25 @@ def read_users(skip: int = 0, limit: int = 100, current_user: models.User = Depe
 
 @app.post("/shoutouts", response_model=schemas.ShoutOutOut)
 def create_shoutout(shoutout: schemas.ShoutOutCreate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(database.get_db)):
-    # 1. Create ShoutOut
     new_shoutout = models.ShoutOut(
         from_user_id=current_user.id,
         message=shoutout.message,
         category=shoutout.category,
-        sentiment_score=None, # Removed dummy data
-        mood=None             # Removed dummy data
+        sentiment_score=None,
+        mood=None
     )
     db.add(new_shoutout)
     db.flush()
 
-    # 2. Add recipients and process XP
     for recipient_id in shoutout.recipient_ids:
         if recipient_id == current_user.id:
             continue
         
         recipient_user = db.query(models.User).filter(models.User.id == recipient_id).first()
         if recipient_user:
-            # Link recipient
             assoc = models.Recipient(shoutout_id=new_shoutout.id, user_id=recipient_id)
             db.add(assoc)
             
-            # Recipient +100 points
             recipient_user.points += 100
             t_rec = models.Transaction(
                 user_id=recipient_id,
@@ -115,7 +116,6 @@ def create_shoutout(shoutout: schemas.ShoutOutCreate, current_user: models.User 
             )
             db.add(t_rec)
 
-    # 3. Sender +50 points
     current_user.points += 50
     t_sender = models.Transaction(
         user_id=current_user.id,
